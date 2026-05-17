@@ -7,7 +7,7 @@ Repositori ini berisi **data gabungan** (`concat.csv`) dari beberapa run CSV per
 ## 1. Tujuan proyek
 
 - **Prediksi target:** besaran **drift translasi** sebagai **jarak skalar**  
-  \(\text{drift\_distance} = \sqrt{dx^2 + dy^2 + dz^2}\)  
+  `drift_distance = sqrt(dx^2 + dy^2 + dz^2)`  
   (bukan prediksi per komponen sumbu secara terpisah untuk target utama analisis tabular).
 
 - **Motivasi:** drift translasi mencerminkan **ketidakstabilan estimasi pose** relatif antar frame; memprediksinya dari sinyal telemetri/tracking membantu **monitoring kualitas** dan analisis penyebab error.
@@ -35,8 +35,8 @@ Repositori ini berisi **data gabungan** (`concat.csv`) dari beberapa run CSV per
 ## 3. Langkah analisis (alur notebook prediksi)
 
 1. **Muat `concat.csv`** — pemeriksaan duplikat, missing, ringkasan outlier IQR.
-2. **Definisi target** — `__drift_distance__` = \(\sqrt{dx^2+dy^2+dz^2}\).
-3. **Pemilihan fitur** — kolom berikut **dikecualikan** dari \(X\) (bukan target): timestamp/indeks waktu wall-clock, ordinal state, komponen translasi mentah dan `e_trans` (mitigasi **leakage** ke target jarak), serta komponen rotasi per sumbu (`drx`, `dry`, `drz`). Urutan temporal untuk model sekuensial memakai **`__row_order__`** (indeks baris asli CSV).
+2. **Definisi target** — `__drift_distance__` = `sqrt(dx^2 + dy^2 + dz^2)`.
+3. **Pemilihan fitur** — kolom berikut **dikecualikan** dari matriks fitur `X` (bukan target): timestamp/indeks waktu wall-clock, ordinal state, komponen translasi mentah dan `e_trans` (mitigasi **leakage** ke target jarak), serta komponen rotasi per sumbu (`drx`, `dry`, `drz`). Urutan temporal untuk model sekuensial memakai **`__row_order__`** (indeks baris asli CSV).
 4. **Train/test split** acak (reproducible seed) + `StandardScaler` fit pada train.
 5. **Baseline XGBoost** — metrik train/test.
 6. **Tuning** — `RandomizedSearchCV` dengan distribusi `scipy.stats` (menghindari grid diskret raksasa), Optuna Random & TPE, pemilihan parameter terbaik + `tuned_xgb`.
@@ -50,11 +50,31 @@ Repositori ini berisi **data gabungan** (`concat.csv`) dari beberapa run CSV per
 
 ## 4. Parameter performa: makna dan rationale
 
-| Metrik | Definisi ringkas | Rationale penggunaan | Sumber |
-|--------|------------------|----------------------|--------|
-| **R² (koefisien determinasi)** | \(1 - \frac{\sum (y-\hat y)^2}{\sum (y-\bar y)^2}\) — proporsi varians target yang dijelaskan relatif terhadap prediktor konstanta \(\bar y\). | Skala intuitif untuk “seberapa baik” vs baseline mean; mudah dibanding antar-model pada split yang sama. | [scikit-learn `r2_score`](https://scikit-learn.org/stable/modules/model_evaluation.html#r2-score-the-coefficient-of-determination) |
-| **RMSE** | \(\sqrt{\frac{1}{n}\sum (y-\hat y)^2}\) — error dalam **unit yang sama** dengan target (jarak drift). | Sensitif ke **outlier besar**; cocok jika error besar sangat merugikan. | Same chapter, [mean_squared_error](https://scikit-learn.org/stable/modules/model_evaluation.html#mean-squared-error) |
-| **MAE** | \(\frac{1}{n}\sum \|y-\hat y\|\) — rata-rata error absolut. | Lebih **robust** terhadap outlier ekstrem daripada RMSE; interpretasi “rata-rata meteran error” sederhana. | [mean_absolute_error](https://scikit-learn.org/stable/modules/model_evaluation.html#mean-absolute-error) |
+Rumus di bawah sengaja **di luar tabel** agar parser Markdown (GitHub, VS Code, dsb.) tidak memecah tabel karena simbol `|` di dalam notasi matematika.
+
+**R² (koefisien determinasi)** — proporsi varians target yang dijelaskan relatif terhadap memprediksi konstanta rata-rata `y_bar`:
+
+```text
+R2 = 1 - sum((y - y_hat)^2) / sum((y - y_bar)^2)
+```
+
+**RMSE** — akar rata-rata kuadrat error; satuan sama dengan target (mis. jarak drift):
+
+```text
+RMSE = sqrt( (1/n) * sum((y - y_hat)^2) )
+```
+
+**MAE** — rata-rata nilai mutlak error (tanpa karakter `|` di dalam sel tabel):
+
+```text
+MAE = (1/n) * sum( abs(y - y_hat) )
+```
+
+| Metrik | Definisi (ringkas) | Rationale penggunaan | Sumber |
+|--------|--------------------|------------------------|--------|
+| **R²** | Seberapa baik model vs baseline rata-rata `y_bar` (lihat rumus di atas). | Skala intuitif; mudah dibanding antar-model pada **split yang sama**. | [scikit-learn `r2_score`](https://scikit-learn.org/stable/modules/model_evaluation.html#r2-score-the-coefficient-of-determination) |
+| **RMSE** | Error dalam unit target; memberi bobot lebih ke error besar. | Sensitif ke **outlier**; cocok bila error besar sangat merugikan. | [`mean_squared_error`](https://scikit-learn.org/stable/modules/model_evaluation.html#mean-squared-error) (RMSE = sqrt(MSE)) |
+| **MAE** | Rata-rata besar error absolut. | Lebih **robust** ke outlier ekstrem vs RMSE; mudah dijelaskan ke non-statistik. | [`mean_absolute_error`](https://scikit-learn.org/stable/modules/model_evaluation.html#mean-absolute-error) |
 
 **Mengapa sering melihat train vs test:** train tinggi + test rendah mengindikasikan **overfitting**; keduanya rendah mengindikasikan **underfitting** atau sinyal lemah. **Cross-validation** memberi estimasi performa lebih stabil daripada satu split (Lopez de Prado, 2018 mendiskusikan leakage temporal—relevan jika Anda beralih ke validasi kronologis murni).
 
@@ -62,7 +82,7 @@ Repositori ini berisi **data gabungan** (`concat.csv`) dari beberapa run CSV per
 
 ## 5. Glosar kolom `concat.csv` dan hubungan plausibel dengan **error / drift translasi**
 
-Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum **visual(-inertial) odometry / tracking**: pose berubah antar frame; `dx,dy,dz` adalah komponen translasi antar frame (digunakan hanya untuk **target jarak** di notebook prediksi, lalu **dihapus** dari \(X\) untuk mengurangi leakage). Jika pipeline logging internal Anda berbeda, sesuaikan makna dengan dokumentasi internal tim Anda.
+Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum **visual(-inertial) odometry / tracking**: pose berubah antar frame; `dx`, `dy`, `dz` adalah komponen translasi antar frame (dipakai hanya untuk **target jarak** di notebook prediksi, lalu **dihapus** dari `X` untuk mengurangi leakage). Jika pipeline logging internal Anda berbeda, sesuaikan makna dengan dokumentasi internal tim Anda.
 
 ### 5.1 Identitas & waktu
 
@@ -71,7 +91,7 @@ Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum *
 | `frame` | Indeks frame / urutan sampel | **Dihapus dari X** di notebook prediksi (ordinal waktu, bukan penyebab fisik); urutan alternatif: `__row_order__`. |
 | `timestamp` | Cap waktu (mis. epoch) | **Dihapus** — drift seharusnya dijelaskan oleh **dinamika tracking**, bukan label waktu absolut (kecuali ada drift sistematis jam; biasanya dihindari). |
 | `realtime_sec` | Waktu “nyata” / wall clock | **Dihapus** — alasan serupa; risiko spurious correlation. |
-| `track_inner_ms` | Latensi internal loop tracking (ms) | Latensi tinggi dapat berkorelasi dengan pose “tertinggal” dan error reprojeksi; dapat memengaruhi stabilitas translasi. | Umum sistem real-time (Liu & Layland, 1973 untuk scheduling; analogi latency) |
+| `track_inner_ms` | Latensi internal loop tracking (ms) | Latensi tinggi dapat berkorelasi dengan pose “tertinggal” dan error reprojeksi; dapat memengaruhi stabilitas translasi. (Analogi latency sistem real-time; lihat Liu & Layland, 1973.) |
 
 ### 5.2 Status & flag tracking
 
@@ -79,7 +99,7 @@ Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum *
 |-------|----------------|------------------------------|
 | `flag_ok` | Indikator frame “OK” | Status tracking buruk sering beriringan dengan lonjakan error pose. |
 | `flag_recently_lost` | Baru saja kehilangan track | Transisi tracking lemah → lonjakan drift/inisialisasi ulang. |
-| `flag_lost` | Kehilangan track | Kehilangan fitur/visual lock → pose tidak terikat geometri → error translasi besar. | Literatur VO/SLAM: kegagalan tracking (mis. Mur-Artal et al., ORB-SLAM, 2015). |
+| `flag_lost` | Kehilangan track | Kehilangan fitur/visual lock → pose tidak terikat geometri → error translasi besar (literatur VO/SLAM: kegagalan tracking; mis. Mur-Artal et al., ORB-SLAM, 2015). |
 | `flag_vo` | Mode / flag VO | Perubahan mode mengubah sumber pose (visual vs inertial) → pola drift berbeda. |
 | `tracking_state_name_OK`, `tracking_state_name_RECENTLY_LOST` | One-hot nama state | State machine tracking eksplisit. |
 | `tracking_state_2`, `tracking_state_3` | Kode ordinal state | **Dihapus dari X** di notebook prediksi (ordinal diskret). |
@@ -92,7 +112,7 @@ Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum *
 |-------|----------------|------------------|
 | `cpu_temp_c` | Suhu CPU | Thermal throttling / clock dapat memengaruhi latensi dan kualitas estimasi. |
 | `imu_scale_s` | Skala / faktor IMU | Skala salah → propagasi inertial salah → drift (jika IMU dipakai dalam rantai pose). |
-| `bias_bax` … `bias_bwz` | Bias akselerometer & gyro (biasanya rad/s & m/s² tergantung konvensi) | Bias gyro memengaruhi integrasi orientasi; bias aksel memengaruhi skala gravitasi/linear acceleration — keduanya mempengaruhi **kompensasi** dan sisa error translasi dalam sistem VI-VO. | Bar-Shalom et al. (2001) *Estimation with Applications to Tracking and Navigation* |
+| `bias_bax` … `bias_bwz` | Bias akselerometer & gyro (biasanya rad/s & m/s² tergantung konvensi) | Bias gyro memengaruhi integrasi orientasi; bias aksel memengaruhi skala gravitasi/linear acceleration — keduanya mempengaruhi **kompensasi** dan sisa error translasi dalam sistem VI-VO (Bar-Shalom et al., 2001). |
 
 ### 5.4 Pose delta & error geometri
 
@@ -102,7 +122,7 @@ Interpretasi di bawah ini mengasumsikan **nama kolom** mengikuti konvensi umum *
 | `e_trans` | Besaran error translasi teragregasi (sering norm atau skor terkait) | Sangat berkorelasi dengan target jarak → **dihapus dari X** (leakage). |
 | `drx`, `dry`, `drz` | Komponen rotasi / delta orientasi | Rotasi mempengaruhi proyeksi 3D→2D dan epipolar geometry → memengaruhi residual translasi; di notebook **dihapus** sesuai permintaan fokus “drift jarak” tanpa saluran rotasi di fitur. |
 | `mean_desc_dist`, `desc_std` | Statistik deskriptor | Deskriptor buruk → matching lemah → pose tidak stabil. |
-| `inlier_ratio` | Rasio inlier (RANSAC/geometry consistency) | Inlier rendah → model geometri lemah → error pose naik. | Hartley & Zisserman (2004) *Multiple View Geometry* (residual & robust estimation). |
+| `inlier_ratio` | Rasio inlier (RANSAC/geometry consistency) | Inlier rendah → model geometri lemah → error pose naik (Hartley & Zisserman, 2004 — residual & estimasi robust). |
 | `reproj_error` | Error reprojeksi (piksel atau unit dinormalisasi) | Langsung mengukur konsistensi reproyeksi 3D–2D; naik saat tracking goyah → berkorelasi dengan error translasi. |
 | `reproj_error_lag1`, `reproj_error_lag5`, `reproj_error_rolling_mean` | Lag & rolling reproj | Memberi **memori singkat** kualitas visual; autokorelasi error. |
 | `feature_spread`, `feature_grid_coverage` | Sebaran & cakupan distribusi fitur | Scene degenerate (fitur kolinear/sedikit) memperburuk estimasi pose. |
