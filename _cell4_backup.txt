@@ -1,0 +1,433 @@
+from pathlib import Path
+
+
+
+import matplotlib.pyplot as plt
+
+import numpy as np
+
+import pandas as pd
+
+from sklearn.linear_model import LogisticRegression
+
+from sklearn.metrics import (
+
+    accuracy_score,
+
+    mean_squared_error,
+
+    r2_score,
+
+    roc_auc_score,
+
+)
+
+from sklearn.model_selection import train_test_split
+
+from sklearn.preprocessing import StandardScaler
+
+
+
+import importlib.util
+
+import subprocess
+
+import sys
+
+
+
+# Memuat X, y jika kernel baru / sel data belum dijalankan (menghindari NameError)
+
+if "X" not in globals() or "y" not in globals():
+
+    DATA_PATH = Path("concat.csv")
+
+    if not DATA_PATH.is_file():
+
+        raise FileNotFoundError(
+
+            "concat.csv tidak ditemukan. Set cwd ke folder simulation atau jalankan sel pembuatan data di atas."
+
+        )
+
+    _df = pd.read_csv(DATA_PATH)
+
+    _EXCLUDE = {
+
+        "frame",
+
+        "timestamp",
+
+        "realtime_sec",
+
+        "track_inner_ms",
+
+        "tracking_state",
+
+        "tracking_state_name",
+
+        "host",
+
+        "build_id",
+
+        "e_trans",
+
+        "dx",
+
+        "dy",
+
+        "dz",
+
+        "drx",
+
+        "dry",
+
+        "drz",
+
+    }
+
+    _num = _df.select_dtypes(include=[np.number]).columns.tolist()
+
+    _feat = [c for c in _num if c not in _EXCLUDE]
+
+    X = _df[_feat].copy()
+
+    y = _df["e_trans"].astype(float).values
+
+    _valid = [c for c in _feat if X[c].notna().any()]
+
+    X = X[_valid]
+
+    _mask = np.isfinite(y) & X.notna().all(axis=1)
+
+    X = X.loc[_mask]
+
+    y = y[_mask.values]
+
+
+
+
+
+def _ensure_xgboost() -> None:
+
+    if importlib.util.find_spec("xgboost") is None:
+
+        print("Paket 'xgboost' belum ada; menginstal ke kernel ini ...")
+
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "xgboost"])
+
+
+
+
+
+_ensure_xgboost()
+
+import xgboost as xgb
+
+
+
+RANDOM_STATE = 67
+
+
+
+X_train_df, X_test_df, y_train, y_test = train_test_split(
+
+    X,
+
+    y,
+
+    test_size=0.3,
+
+    random_state=RANDOM_STATE,
+
+)
+
+X_train = X_train_df.values
+
+X_test = X_test_df.values
+
+
+
+# Validasi internal dari train (tanpa melihat test) + early stopping untuk kurangi overfit
+
+X_fit, X_val, y_fit, y_val = train_test_split(
+
+    X_train,
+
+    y_train,
+
+    test_size=0.15,
+
+    random_state=RANDOM_STATE + 1,
+
+)
+
+xgb_reg_cv = xgb.XGBRegressor(
+
+    n_estimators=800,
+
+    max_depth=5,
+
+    learning_rate=0.02,
+
+    min_child_weight=4,
+
+    reg_alpha=0.1,
+
+    reg_lambda=1.0,
+
+    gamma=0.1,
+
+    subsample=0.8,
+
+    colsample_bytree=0.8,
+
+    random_state=RANDOM_STATE,
+
+    n_jobs=-1,
+
+    callbacks=[xgb.callback.EarlyStopping(rounds=50, save_best=True)],
+
+)
+
+xgb_reg_cv.fit(
+
+    X_fit,
+
+    y_fit,
+
+    eval_set=[(X_val, y_val)],
+
+    verbose=False,
+
+)
+
+best_n = int(xgb_reg_cv.best_iteration) + 1
+
+print(f"Early stopping: n_estimators terpilih = {best_n} (dari max 800)")
+
+
+
+xgb_reg = xgb.XGBRegressor(
+
+    n_estimators=best_n,
+
+    max_depth=5,
+
+    learning_rate=0.02,
+
+    min_child_weight=4,
+
+    reg_alpha=0.1,
+
+    reg_lambda=1.0,
+
+    gamma=0.1,
+
+    subsample=0.8,
+
+    colsample_bytree=0.8,
+
+    random_state=RANDOM_STATE,
+
+    n_jobs=-1,
+
+)
+
+xgb_reg.fit(X_train, y_train, verbose=False)
+
+
+
+pred_tr = xgb_reg.predict(X_train)
+
+pred_te = xgb_reg.predict(X_test)
+
+res_tr = y_train - pred_tr
+
+res_te = y_test - pred_te
+
+mse_tr = mean_squared_error(y_train, pred_tr)
+
+mse_te = mean_squared_error(y_test, pred_te)
+
+var_tr = float(np.var(y_train))
+
+var_te = float(np.var(y_test))
+
+# MSE relatif terhadap variansi y (×100 = persen); bandingkan skala error vs sebaran target
+
+mse_pct_tr = 100.0 * mse_tr / var_tr if var_tr > 0 else float("nan")
+
+mse_pct_te = 100.0 * mse_te / var_te if var_te > 0 else float("nan")
+
+std_res_tr = float(np.std(res_tr, ddof=0))
+
+std_res_te = float(np.std(res_te, ddof=0))
+
+
+
+print("=== XGBRegressor (e_trans kontinu) ===")
+
+print(f"Train MSE:              {mse_tr:.6f}")
+
+print(f"Test  MSE:              {mse_te:.6f}")
+
+print(
+
+    "Train MSE / var(y) %: "
+
+    f"{mse_pct_tr:.4f}  (var train = {var_tr:.6f})"
+
+)
+
+print(
+
+    "Test  MSE / var(y) %: "
+
+    f"{mse_pct_te:.4f}  (var test  = {var_te:.6f})"
+
+)
+
+print(f"Train std residual:     {std_res_tr:.6f}")
+
+print(f"Test  std residual:     {std_res_te:.6f}")
+
+print(f"Test  R2:               {r2_score(y_test, pred_te):.4f}")
+
+
+
+mean_tr = float(np.mean(y_train))
+
+pred_base_tr = np.full_like(y_train, mean_tr, dtype=float)
+
+pred_base_te = np.full_like(y_test, mean_tr, dtype=float)
+
+mse_base_tr = mean_squared_error(y_train, pred_base_tr)
+
+mse_base_te = mean_squared_error(y_test, pred_base_te)
+
+print()
+
+print("Baseline: prediksi konstan = mean(y_train)")
+
+print(f"  Train MSE: {mse_base_tr:.6f}")
+
+print(f"  Test  MSE: {mse_base_te:.6f}")
+
+fig, ax = plt.subplots(figsize=(6, 5))
+
+ax.scatter(y_test, pred_te, alpha=0.12, s=10, c="#2980b9", edgecolors="none")
+
+lims = float(np.nanmax([y_test.max(), pred_te.max()]))
+
+ax.plot([0, lims], [0, lims], "k--", lw=1, label="y = x")
+
+ax.set_xlabel("Aktual e_trans (test)")
+
+ax.set_ylabel("Prediksi e_trans (test)")
+
+ax.set_title("XGBoost regressor: prediksi vs aktual")
+
+ax.legend()
+
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+
+plt.show()
+
+
+
+thresh = float(np.median(y_train))
+
+y_train_bin = (y_train > thresh).astype(np.int32)
+
+y_test_bin = (y_test > thresh).astype(np.int32)
+
+
+
+scaler_bin = StandardScaler()
+
+X_train_s = scaler_bin.fit_transform(X_train)
+
+X_test_s = scaler_bin.transform(X_test)
+
+
+
+log_clf = LogisticRegression(max_iter=5000, random_state=RANDOM_STATE)
+
+log_clf.fit(X_train_s, y_train_bin)
+
+log_proba = log_clf.predict_proba(X_test_s)[:, 1]
+
+auc_log = roc_auc_score(y_test_bin, log_proba)
+
+acc_log = accuracy_score(y_test_bin, log_clf.predict(X_test_s))
+
+
+
+xgb_clf = xgb.XGBClassifier(
+
+    n_estimators=300,
+
+    max_depth=5,
+
+    learning_rate=0.05,
+
+    min_child_weight=2,
+
+    subsample=0.85,
+
+    colsample_bytree=0.85,
+
+    random_state=RANDOM_STATE,
+
+    n_jobs=-1,
+
+    eval_metric="logloss",
+
+)
+
+xgb_clf.fit(X_train, y_train_bin)
+
+xgb_proba = xgb_clf.predict_proba(X_test)[:, 1]
+
+auc_xgb = roc_auc_score(y_test_bin, xgb_proba)
+
+acc_xgb = accuracy_score(y_test_bin, xgb_clf.predict(X_test))
+
+
+
+print()
+
+print("=== Klasifikasi: e_trans > median(train) ===")
+
+print(f"Ambang (median train): {thresh:.6f}")
+
+print(f"LogisticRegression  ROC-AUC (test): {auc_log:.4f}, akurasi: {acc_log:.4f}")
+
+print(f"XGBClassifier       ROC-AUC (test): {auc_xgb:.4f}, akurasi: {acc_xgb:.4f}")
+
+
+
+fig, ax = plt.subplots(figsize=(4.5, 3.8))
+
+models = ["LogisticRegression", "XGBClassifier"]
+
+aucs = [auc_log, auc_xgb]
+
+bars = ax.bar(models, aucs, color=["#9b59b6", "#27ae60"], edgecolor="black", linewidth=0.6)
+
+ax.set_ylabel("ROC-AUC (test)")
+
+ax.set_title("Error tinggi vs rendah (label sama untuk kedua model)")
+
+ax.set_ylim(0, 1)
+
+for b, v in zip(bars, aucs):
+
+    ax.text(b.get_x() + b.get_width() / 2, v + 0.02, f"{v:.3f}", ha="center", fontsize=10)
+
+plt.tight_layout()
+
+plt.show()
